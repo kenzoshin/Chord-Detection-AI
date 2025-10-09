@@ -1,0 +1,149 @@
+import numpy as np
+import tflite_runtime.interpreter as tflite
+from input_microphone import InputMicrophone  # For real-time audio input
+import serial  # For Arduino communication
+import time
+from scipy import signal  # NEW: For STFT spectrogram computation
+from PIL import Image  # NEW: For resizing (install if needed: pip install pillow)
+import io  # For image handling
+
+# Load TFLite model and labels
+interpreter = tflite.Interpreter(model_path="model.tflite")
+interpreter.allocate_tensors()
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
+
+with open("labels.txt", "r") as f:
+    labels = [line.strip() for line in f.readlines()]
+
+# Chord to (root_semitone, quality) mapping (unchanged)
+chord_to_root_quality = {
+    "C_major": (0, 0), "C_minor": (0, 1),
+    "C#_major": (1, 0), "C#_minor": (1, 1),
+    "D_major": (2, 0), "D_minor": (2, 1),
+    "D#_major": (3, 0), "D#_minor": (3, 1),
+    "E_major": (4, 0), "E_minor": (4, 1),
+    "F_major": (5, 0), "F_minor": (5, 1),
+    "F#_major": (6, 0), "F#_minor": (6, 1),
+    "G_major": (7, 0), "G_minor": (7, 1),
+    "G#_major": (8, 0), "G#_minor": (8, 1),
+    "A_major": (9, 0), "A_minor": (9, 1),
+    "A#_major": (10, 0), "A#_minor": (10, 1),
+    "B_major": (11, 0), "B_minor": (11, 1),
+    # Add more if needed
+}
+
+# Key profiles and other constants (unchanged)
+major_profile = np.array([6.35, 2.26, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
+minor_profile = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
+note_names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+mode_names = ["major", "minor"]
+chord_intervals = {0: [0, 4, 7], 1: [0, 3, 7]}
+
+# Initialize serial (unchanged)
+ser = serial.Serial('COM3', 9600, timeout=1)
+time.sleep(2)
+
+# Rolling buffer (unchanged)
+chord_buffer_size = 4
+chord_buffer = []
+
+def get_chord_notes(root, quality):  # Unchanged
+    intervals = chord_intervals[quality]
+    return [(root + i) % 12 for i in intervals]
+
+def detect_key(chords):  # Unchanged
+    if not chords:
+        return None
+    hist = np.zeros(12)
+    for root, quality in chords:
+        notes = get_chord_notes(root, quality)
+        for note in notes:
+            hist[note] += 1
+    hist /= np.sum(hist) if np.sum(hist) > 0 else 1
+    best_corr = -np.inf
+    best_key = None
+    for k_root in range(12):
+        shifted_major = np.roll(major_profile, -k_root)
+        shifted_minor = np.roll(minor_profile, -k_root)
+        corr_major = np.corrcoef(hist, shifted_major)[0, 1]
+        corr_minor = np.corrcoef(hist, shifted_minor)[0, 1]
+        if corr_major > best_corr:
+            best_corr = corr_major
+            best_key = (k_root, 0)
+        if corr_minor > best_corr:
+            best_corr = corr_minor
+            best_key = (k_root, 1)
+    return best_key
+
+def key_to_string(root, mode):  # Unchanged
+    return f"{note_names[root]} {mode_names[mode]}"
+
+# NEW: Function to compute spectrogram from audio
+def audio_to_spectrogram(audio, sample_rate=16000, n_fft=2048, hop_length=512):
+    """Compute magnitude spectrogram using STFT."""
+    f, t, Zxx = signal.stft(audio, fs=sample_rate, nperseg=n_fft, noverlap=hop_length)
+    spectrogram = np.abs(Zxx)  # Magnitude
+    spectrogram = np.log(spectrogram + 1e-10)  # Log scale for better visualization
+    spectrogram = (spectrogram - np.min(spectrogram)) / (np.max(spectrogram) - np.min(spectrogram))  # Normalize 0-1
+    return spectrogram
+
+# NEW: Convert spectrogram to model input image
+def spectrogram_to_image(spectrogram, target_size=(224, 224)):
+    """Convert 2D spectrogram to 3-channel RGB image, resize."""
+    # Repeat to 3 channels (grayscale to RGB)
+    spectrogram = np.stack([spectrogram] * 3, axis=-1)
+    # Convert to PIL Image for resizing
+    img = Image.fromarray((spectrogram * 255).astype(np.uint8))
+    img = img.resize(target_size, Image.BILINEAR)
+    # Back to numpy, normalize to [0,1] or as per model (check input_details['dtype'])
+    img_array = np.array(img) / 255.0
+    return img_array.astype(np.float32)
+
+# Updated classification loop
+def classify_audio():
+    input_shape = input_details[0]['shape']  # e.g., [1, 224, 224, 3]
+    sample_rate = 16000  # Assume same as original; adjust if needed
+    chunk_size = sample_rate  # 1 second audio
+    with InputMicrophone(sample_rate=sample_rate, chunk_size=chunk_size) as mic:
+        for chunk in mic:
+            audio = np.array(chunk, dtype=np.float32)
+            audio = (audio - np.mean(audio)) / (np.std(audio) + 1e-6)  # Normalize (unchanged)
+
+            # NEW: Convert to spectrogram
+            spectrogram = audio_to_spectrogram(audio, sample_rate)
+
+            # NEW: Convert to image input
+            img_input = spectrogram_to_image(spectrogram, target_size=(input_shape[1], input_shape[2]))
+            img_input = img_input.reshape(input_shape)  # Add batch dim if needed
+
+            # Feed to model (changed from audio to img_input)
+            interpreter.set_tensor(input_details[0]['index'], img_input)
+            interpreter.invoke()
+            output = interpreter.get_tensor(output_details[0]['index'])[0]
+
+            # Rest unchanged
+            predicted_idx = np.argmax(output)
+            confidence = output[predicted_idx]
+            if confidence > 0.7:
+                chord_label = labels[predicted_idx]
+                if chord_label in chord_to_root_quality:
+                    root, quality = chord_to_root_quality[chord_label]
+                    chord_buffer.append((root, quality))
+                    if len(chord_buffer) > chord_buffer_size:
+                        chord_buffer.pop(0)
+                    if len(chord_buffer) == chord_buffer_size:
+                        detected_key = detect_key(chord_buffer)
+                        if detected_key:
+                            key_str = key_to_string(*detected_key)
+                            print(f"Detected key: {key_str}")
+                            ser.write((key_str + "\n").encode())
+            time.sleep(0.1)
+
+if __name__ == "__main__":
+    try:
+        classify_audio()
+    except KeyboardInterrupt:
+        print("Stopping...")
+    finally:
+        ser.close()
