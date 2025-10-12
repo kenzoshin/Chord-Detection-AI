@@ -1,0 +1,21 @@
+// Arduino: waits for serial input from Python to toggle LED
+
+int ledPin = 13; // onboard LED pin
+
+void setup() {
+  pinMode(ledPin, OUTPUT);
+  Serial.begin(9600); // must match Python baud rate
+}
+
+void loop() {
+  if (Serial.available() > 0) {
+    char command = Serial.read();
+
+    if (command == '1') {
+      digitalWrite(ledPin, HIGH); // turn on LED
+    } 
+    else if (command == '0') {
+      digitalWrite(ledPin, LOW);  // turn off LED
+    }
+  }
+}
