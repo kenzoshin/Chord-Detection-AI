@@ -9,7 +9,7 @@ BAUD_RATE = 9600
 THRESHOLD = 0.0003  # Adjust this based on microphone sensitivity
 CHECK_INTERVAL = 0.1  # seconds between checks
 
-MIC_INDEX = 1 # CHANGE DEPENDING ON MICROPHONE
+MIC_INDEX = 1 # Change depending on microphone (MicTest code can be found on github)
 
 # --- Setup --
 arduino = serial.Serial(SERIAL_PORT, BAUD_RATE)
@@ -30,7 +30,7 @@ def sound_detected():
     audio = sd.rec(int(duration * 44100), samplerate=44100, channels=1, dtype='float64', device=MIC_INDEX )
     sd.wait()
     volume_norm = np.linalg.norm(audio) / len(audio)
-    print_volume_bar(volume_norm) #print(volume_norm) for numbers instead of the bar
+    print_volume_bar(volume_norm) #print(volume_norm) for numbers instead of the bar print_volume_bar(volume_norm)
     return volume_norm > THRESHOLD
 
 print("Listening for sound... (Ctrl+C to stop)")
