@@ -1,21 +1,138 @@
-// Arduino: waits for serial input from Python to toggle LED
+// ===========================================
+// 2-digit 7-segment display driver
+// Digits: mixed polarity (CA digits + CC segments)
+// ===========================================
 
-int ledPin = 13; // onboard LED pin
+// ---- SEGMENT MAPPING ----
+// a,b,c,d,e,f,g,dp
+int segmentPins[8] = {
+  11, // a  (top)
+   9, // b
+   4, // c
+   2, // d
+   8, // e
+  10, // f
+   5, // g (middle)
+   3  // dp (decimal point)
+};
+
+// ---- DIGIT SELECT PINS ----
+// Common Anode digits: LOW = ON, HIGH = OFF
+int digitPins[2] = {
+  12, // left  digit (volume)
+   7  // right digit (key letter)
+};
+
+// ---- NUMBER PATTERNS (a b c d e f g) ----
+byte numbers[10][7] = {
+  {1,1,1,1,1,1,0},  // 0
+  {0,1,1,0,0,0,0},  // 1
+  {1,1,0,1,1,0,1},  // 2
+  {1,1,1,1,0,0,1},  // 3
+  {0,1,1,0,0,1,1},  // 4
+  {1,0,1,1,0,1,1},  // 5
+  {1,0,1,1,1,1,1},  // 6
+  {1,1,1,0,0,0,0},  // 7
+  {1,1,1,1,1,1,1},  // 8
+  {1,1,1,1,0,1,1}   // 9
+};
+
+// ---- LETTERS A–G (a b c d e f g) ----
+byte letters[7][7] = {
+  {1,1,1,0,1,1,1}, // A
+  {0,0,1,1,1,1,1}, // B
+  {1,0,0,1,1,1,0}, // C
+  {0,1,1,1,1,0,1}, // D
+  {1,0,0,1,1,1,1}, // E
+  {1,0,0,0,1,1,1}, // F
+  {1,0,1,1,1,1,1}  // G
+};
+
+// ---- GLOBALS ----
+int volume = 1;
+char keyChar = 'A';
+bool isSharp = false;
+unsigned long lastRefresh = 0;
+int frame = 0;
 
 void setup() {
-  pinMode(ledPin, OUTPUT);
-  Serial.begin(9600); // must match Python baud rate
+  Serial.begin(9600);
+
+  // Set segment pins
+  for (int i = 0; i < 8; i++) {
+    pinMode(segmentPins[i], OUTPUT);
+    digitalWrite(segmentPins[i], LOW); // off
+  }
+
+  // Set digit pins (common anode)
+  for (int i = 0; i < 2; i++) {
+    pinMode(digitPins[i], OUTPUT);
+    digitalWrite(digitPins[i], HIGH); // off
+  }
+
+  Serial.println("Display ready!");
 }
 
 void loop() {
+  // ---- SERIAL INPUT ----
   if (Serial.available() > 0) {
-    char command = Serial.read();
+    String s = Serial.readStringUntil('\n');
+    s.trim();
+    if (s.length() == 0) return;
 
-    if (command == '1') {
-      digitalWrite(ledPin, HIGH); // turn on LED
-    } 
-    else if (command == '0') {
-      digitalWrite(ledPin, LOW);  // turn off LED
+    // ----- PARSE VOLUME -----
+    if (s.startsWith("10"))
+        volume = 10;
+    else
+        volume = s.charAt(0) - '0';
+
+    // If second character is NOT A–G, skip key update (volume only)
+    if (s.length() >= 2) {
+      char c = toupper(s.charAt(1));
+      if (c >= 'A' && c <= 'G') {
+          keyChar = c;
+          isSharp = (s.indexOf('#') >= 0 || s.indexOf('b') >= 0);
+      }
     }
   }
+
+  // ---- DISPLAY REFRESH (multiplexing) ----
+  if (millis() - lastRefresh >= 2) {
+    lastRefresh = millis();
+    refreshDisplay();
+  }
+}
+
+void refreshDisplay() {
+  // Turn OFF both digits
+  digitalWrite(digitPins[0], HIGH);
+  digitalWrite(digitPins[1], HIGH);
+
+  // Toggle digits to show
+  if (frame == 0) {
+    showNumber(volume == 10 ? 0 : volume, 0);
+  } else {
+    showLetter(keyChar, 1);
+  }
+
+  frame ^= 1; // toggle 0/1
+}
+
+void setSegments(byte pattern[7]) {
+  for (int i = 0; i < 7; i++) {
+    digitalWrite(segmentPins[i], pattern[i] ? HIGH : LOW);
+  }
+}
+
+void showNumber(int num, int whichDigit) {
+  setSegments(numbers[num]);
+  digitalWrite(segmentPins[7], LOW); // dp OFF
+  digitalWrite(digitPins[whichDigit], LOW); // turn digit ON
+}
+
+void showLetter(char c, int whichDigit) {
+  int idx = (c >= 'A' && c <= 'G') ? (c - 'A') : 0;
+  setSegments(letters[idx]);
+  digitalWrite(segmentPins[7], isSharp ? HIGH : LOW);
+  digitalWrite(digitPins[whichDigit], LOW);
 }
